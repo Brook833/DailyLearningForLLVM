@@ -66,6 +66,35 @@ define dso_local i32 @main() #0 {
 这是我们AST转化为LLVM IR中最核心的部分，可以隐约感受到这个代码所表达的意思。
 
 ## LLVM后端优化IR
+LLVM后端在读取了IR之后，就会对这个IR进行优化。这在LLVM后端中是由opt这个组件完成的，它会根据我们输入的LLVM IR和相应的优化等级，进行相应的优化，并输出相应的LLVM IR。
+
+我们可以用:
+```c++
+opt test.ll -S -O3
+```
+对相应的代码进行优化，也可以直接用
+```c++
+clang -S -emit-llvm -O3 test.c
+```
+
+优化，并输出相应的优化结果:
+```c++
+define dso_local i32 @main() local_unnamed_addr #0 {
+  ret i32 0
+}
+```
+观察@main函数，其函数体确实减少了不少。
+
+## LLVM后端生成汇编代码
+LLVM后端帮我们做的最后一步，就是由LLVM IR生成汇编代码，这是由llc这个组件完成的。
+
+我们可以用:
+```c++
+llc test.ll
+```
+生成test.s
+
+有了汇编代码之后，我们就需要调用操作系统自带的汇编器、连接器、最终生成可执行程序。
 
 一个基于LLVM后端的编译器的整体过程是:
 > .c --frontend--> AST
