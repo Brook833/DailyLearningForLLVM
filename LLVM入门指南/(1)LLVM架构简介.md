@@ -96,6 +96,7 @@ llc test.ll
 
 有了汇编代码之后，我们就需要调用操作系统自带的汇编器、连接器、最终生成可执行程序。
 
+## LLVM IR
 一个基于LLVM后端的编译器的整体过程是:
 > .c --frontend--> AST
 > AST --frontend--> LLVM IR
