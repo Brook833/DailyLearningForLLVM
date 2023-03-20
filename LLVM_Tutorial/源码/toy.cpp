@@ -72,7 +72,7 @@ static int gettok() {
         return tok_eof;
     }
 
-    // 未知字符，返回其ASCII值
+    // 未知字符(操作符)，返回其ASCII值
     int ThisChar = LastChar;
     LastChar = getchar();
     return ThisChar;
@@ -137,3 +137,85 @@ public:
 //===----------------------------------------------------------------------===//
 // 语法分析器
 //===----------------------------------------------------------------------===//
+
+// CurTok/getNextToken - 提供一个词元缓存
+// CurTok - 语法分析器正在分析的词元
+// getNextToken - 获取下一个词元并更新CurTok
+static int CurTok;
+static int getNextToken() {
+    return CurTok = gettok();
+}
+
+// BinopPrecedence - 存储每个运算符的优先级
+static std::map<char, int> BinopPrecedence;
+
+// GetTokPrecedence - 获取操作符的优先级
+static int GetTokPrecedence() {
+    if (!isascii(CurTok)) {
+        return -1;
+    }
+
+    int TokPrec = BinopPrecedence[CurTok];
+    if (TokPrec <= 0) {
+        return -1;
+    }
+    return TokPrec;
+}
+
+// Error - 用于错误处理的辅助函数
+ExprAST *Error(const char *Str) {
+    fprintf(stderr, "Error %s\n", Str);
+    return 0;
+}
+
+PrototypeAST *ErrorP(const char *Str) {
+    Error(Str);
+    return 0;
+}
+
+FunctionAST *ErrorF(const char *Str) {
+    Error(Str);
+    return 0;
+}
+
+// 声明，ParseIdentifierExpr需要
+static ExprAST *ParseExpression();
+
+// ParseIdentifierExpr - 解析标识符
+// ::= identifier
+// ::= identifier '(' expression ')'
+static ExprAST *ParseIdentifierExpr() {
+    std::string IdName = IdentifierStr;
+    
+    // 此时CurTok已经是identifier
+    getNextToken();
+
+    if (CurTok != '(') {  // 简单变量
+        return new VariableExprAST(IdName);
+    }
+
+    // 此时CurTok已经是'('
+    getNextToken();
+    std::vector<ExprAST*> Args;
+    if (CurTok != ')') {
+        while(1) {
+            ExprAST *Arg = ParseExpression();
+            if (!Arg) {
+                return 0;
+            }
+            Args.push_back(Arg);
+
+            if (CurTok == ')') {
+                break;
+            }
+
+            if (CurTok != ',') {
+                return Error("参数里表中缺少','或')'");
+            }
+            getNextToken();
+        }
+    }
+
+    getNextToken();
+    return new CallExprAST(IdName, Args);
+}
