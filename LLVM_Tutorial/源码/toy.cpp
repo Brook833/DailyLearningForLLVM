@@ -3,6 +3,7 @@
 #include <map>
 #include <string>
 #include <vector>
+#include <iostream>
 
 //===----------------------------------------------------------------------===//
 // 词法分析器
@@ -123,7 +124,7 @@ class PrototypeAST {
     std::string Name;
     std::vector<std::string> Args;
 public:
-    PrototypeAST(const std::string &name, std::vector<std::string> &args) : Name(name), Args(args) {}
+    PrototypeAST(const std::string &name, const std::vector<std::string> &args) : Name(name), Args(args) {}
 };
 
 // FunctionAST - 此类表示函数的定义，它捕获函数原型及其函数体
@@ -218,4 +219,217 @@ static ExprAST *ParseIdentifierExpr() {
 
     getNextToken();
     return new CallExprAST(IdName, Args);
+}
+
+// ParseNumberExpr - 解析数字文本
+static ExprAST *ParseNumberExpr() {
+    ExprAST *Result = new NumbeExprAST(NumVal);
+    getNextToken();
+    return Result;
+}
+
+// ParseParenExpr - 解析'('expression')'
+static ExprAST *ParseParenExpr() {
+    getNextToken();
+    ExprAST *V = ParseExpression();
+    if (!V) {
+        return 0;
+    }
+
+    if (CurTok != ')') {
+        return Error("缺少括号");
+    }
+
+    getNextToken();
+    return V;
+}
+
+// ParsePrimary - 根据词元解析
+// ::=identifier
+// ::=numberexpr
+// ::=parenexpr
+static ExprAST *ParsePrimary() {
+    switch(CurTok) {
+        default:
+            return Error("解析表达式时出现未知的词元");
+        case tok_identifier:
+            return ParseIdentifierExpr();
+        case tok_number:
+            return ParseNumberExpr();
+        case '(':
+            return ParseParenExpr();
+    }
+}
+
+// ParseBinOpRHS - 解析剩余表达式
+// ::='(' + primary)
+static ExprAST *ParseBinOpRHS(int ExprPrec, ExprAST *LHS) {
+    while(1) {
+        int TokePrec = GetTokPrecedence();
+        if (TokePrec < ExprPrec) {
+            return LHS;
+        }
+
+        int BinOp = CurTok;
+        getNextToken();
+
+        ExprAST *RHS = ParsePrimary();
+        if (!RHS) {
+            return 0;
+        }
+
+        // 如果左运算符优先级小于右运算符优先级，则先去处理右边的部分
+        int NextPrec = GetTokPrecedence();
+        if (TokePrec < NextPrec) {
+            RHS = ParseBinOpRHS(TokePrec + 1, RHS);
+            if (!RHS) {
+                return 0;
+            }
+        }
+        
+        // 合并LHS/RHS
+        LHS = new BinaryExprAST(BinOp, LHS, RHS);
+    }
+}
+
+// 解析最左表达式
+// ::=primary binoprhs
+static ExprAST *ParseExpression() {
+    ExprAST *LHS = ParsePrimary();
+    if (!LHS) {
+        return 0;
+    }
+    
+    return ParseBinOpRHS(0, LHS);
+}
+
+// ParsePrototype - 解析函数原型
+// ::=id'('args')'
+static PrototypeAST *ParsePrototype() {
+    if (CurTok != tok_identifier) {
+        return ErrorP("函数原型缺少函数名");
+    }
+
+    std::string FnName = IdentifierStr;
+    getNextToken();
+
+    if (CurTok != '(') {
+        return ErrorP("函数原型中缺少'('");
+    }
+
+    std::vector<std::string> ArgNames;
+    while(getNextToken() == tok_identifier) {
+        ArgNames.push_back(IdentifierStr);
+    }
+
+    if (CurTok !=')') {
+        return ErrorP("函数原型缺少')'");
+    }
+
+    getNextToken();
+    
+    return new PrototypeAST(FnName, ArgNames);
+}
+
+// ParseDefinition - 解析函数定义
+static FunctionAST *ParseDefinition() {
+    // def
+    getNextToken();
+    
+    PrototypeAST *Proto = ParsePrototype();
+    if (Proto == 0) {
+        return 0;
+    }
+
+    if (ExprAST *E = ParseExpression()) {
+        return new FunctionAST(Proto, E);
+    }
+
+    return 0;
+}
+
+// ParseTopLevelExpr - 解析顶层表达式
+static FunctionAST *ParseTopLevelExpr() {
+    if (ExprAST *E = ParseExpression()) {
+        PrototypeAST *Proto = new PrototypeAST("", std::vector<std::string>());
+        return new FunctionAST(Proto, E);
+    }
+    return 0;
+}
+
+// ParseExtern - 解析extern语句
+static PrototypeAST *ParseExtern() {
+    // extern
+    getNextToken();
+    return ParsePrototype();
+}
+
+//===----------------------------------------------------------------------===//
+// 解析顶层语句
+//===----------------------------------------------------------------------===//
+
+// HandleDefinition - 处理定义
+static void HandleDefinition() {
+    if (ParseDefinition()) {
+        fprintf(stderr, "解析一个函数定义\n");
+    } else {
+        // 跳过错误词元
+        getNextToken();
+    }
+}
+
+//
+static void HandleExtern() {
+    if (ParseExtern()) {
+        fprintf(stderr, "解析一个extern\n");
+    } else {
+        getNextToken();
+    }
+}
+
+// HandleTopLevelExpression - 处理顶层表达式(将顶层表达式看作匿名函数)
+static void HandleTopLevelExpression() {
+    if(ParseTopLevelExpr()) {
+        fprintf(stderr, "解析一个顶层表达式\n");
+    } else {
+        getNextToken();
+    }
+}
+
+// 顶层::=def/extern/expr/';'
+static void MainLoop() {
+    while(1) {
+        fprintf(stderr, "ready> ");
+        switch (CurTok) {
+            case tok_eof:
+                return;
+            case ';':
+                getNextToken();
+                break;
+            case tok_def:
+                HandleDefinition();
+                break;
+            case tok_extern:
+                HandleExtern();
+                break;
+            default:
+                HandleTopLevelExpression();
+                break;
+        }
+    }
+}
+
+int main() {
+    // 值越大优先级越高
+    BinopPrecedence['<'] = 10;
+    BinopPrecedence['+'] = 20;
+    BinopPrecedence['-'] = 20;
+    BinopPrecedence['*'] = 40;
+
+    fprintf(stderr, "ready> ");
+    getNextToken();
+
+    MainLoop();
+
+    return 0;
 }
