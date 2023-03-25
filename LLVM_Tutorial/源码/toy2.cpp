@@ -410,6 +410,72 @@ Value *NamberExprAST::codegen() {
   return ConstantFP::get(*TheContext, APFloat(Val));
 }
 
+Value *VariuableExprAST::codegen() {
+  // Look this variable up in the function
+  Value *V = NamedValues[Name];
+  if (!V) {
+    return LogErrorV("Unknown variable name");
+  }
+  return V;
+}
+
+Value *BinaryExprAST::codegen() {
+  Value *L = LHS->codegen();
+  Value *R = RHS->codegen();
+  if (!L ||!R) {
+    return nullptr;
+  }
+
+  switch(Op) {
+    case '+':
+    return Builder->CreateAdd(L, R, "addtmp");
+    case '-':
+    return Builder->CreateSub(L, R, "subtmp");
+    case '*':
+    return Builder->CreateMul(L, R, "multmp");
+    case '<':
+    return Builder->CreateFCmpULT(L, R, "cmptmp");
+    default:
+    return LogErrorV("invalid binary operator");
+  }
+}
+
+Value *CallExprAST::codegen() {
+  Function *CalleeF = TheModule->getFunction(Callee);
+  if (!CalleeF) {
+    return LogErrorV("unknown function referenced");
+  }
+
+  if (CalleeF->arg_size() != Args.size()) {
+    return LogErrorV("Incorrect # arguments passed");
+  }
+
+  std::vector<Value *> ArgsV;
+  for (size_t i = 0, e = Argsize(); i != e; ++i) {
+    ArgsV.push_back(Args[i]->codegen());
+    if (!ArgsV.back()) {
+      return nullptr;
+    }
+  }
+
+  return Builder->CreateCall(CalleeF, ArgsV, "calltmp");
+}
+
+Function *PrototypeAST::codegen() {
+  std::vector<Type *> Doubles(Args.size(), Type::getDoubleTy(*TheContext));
+  FunctionType *FT = FunctionType::get(Type::getDoubleTy(*TheContext), Doubles, false);
+
+  Function *F = Funciton::Create(FT, Functions::ExternalLinkage, Name, TheModule.get());
+
+  unsigned Idx = 0;
+  for (auto &Arg : F->args()) {
+    Arg.setName(ArgNames[Idx++]);
+  }
+  
+  return F;
+}
+
+
 //===----------------------------------------------------------------------===//
 // Top-Level parsing
 //===----------------------------------------------------------------------===//
