@@ -122,6 +122,8 @@ class VariableExprAST : public ExprAST {
 
 public:
   VariableExprAST(const std::string &Name) : Name(Name) {}
+
+  Value *codegen() override;
 };
 
 /// BinaryExprAST - Expression class for a binary operator.
@@ -175,7 +177,7 @@ public:
               std::unique_ptr<ExprAST> Body)
       : Proto(std::move(Proto)), Body(std::move(Body)) {}
 
-  FUnction *codegen();
+  Function *codegen();
 };
 
 } // end anonymous namespace
@@ -397,20 +399,20 @@ static std::unique_ptr<PrototypeAST> ParseExtern() {
 //===----------------------------------------------------------------------===//
 
 static std::unique_ptr<LLVMContext> TheContext;
-static std::unique_ptr<Module> THeModule;
-static std::unique_ptr<IRBuilder> Builder;
+static std::unique_ptr<Module> TheModule;
+static std::unique_ptr<IRBuilder<>> Builder;
 static std::map<std::string, Value *> NamedValues;
 
-Value *LogError(const char *Str) {
+Value *LogErrorV(const char *Str) {
   LogError(Str);
   return nullptr;
 }
 
-Value *NamberExprAST::codegen() {
+Value *NumberExprAST::codegen() {
   return ConstantFP::get(*TheContext, APFloat(Val));
 }
 
-Value *VariuableExprAST::codegen() {
+Value *VariableExprAST::codegen() {
   // Look this variable up in the function
   Value *V = NamedValues[Name];
   if (!V) {
@@ -428,11 +430,11 @@ Value *BinaryExprAST::codegen() {
 
   switch(Op) {
     case '+':
-    return Builder->CreateAdd(L, R, "addtmp");
+    return Builder->CreateFAdd(L, R, "addtmp");
     case '-':
-    return Builder->CreateSub(L, R, "subtmp");
+    return Builder->CreateFSub(L, R, "subtmp");
     case '*':
-    return Builder->CreateMul(L, R, "multmp");
+    return Builder->CreateFMul(L, R, "multmp");
     case '<':
     return Builder->CreateFCmpULT(L, R, "cmptmp");
     default:
@@ -451,7 +453,7 @@ Value *CallExprAST::codegen() {
   }
 
   std::vector<Value *> ArgsV;
-  for (size_t i = 0, e = Argsize(); i != e; ++i) {
+  for (size_t i = 0, e = Args.size(); i != e; ++i) {
     ArgsV.push_back(Args[i]->codegen());
     if (!ArgsV.back()) {
       return nullptr;
@@ -465,11 +467,11 @@ Function *PrototypeAST::codegen() {
   std::vector<Type *> Doubles(Args.size(), Type::getDoubleTy(*TheContext));
   FunctionType *FT = FunctionType::get(Type::getDoubleTy(*TheContext), Doubles, false);
 
-  Function *F = Funciton::Create(FT, Functions::ExternalLinkage, Name, TheModule.get());
+  Function *F = Function::Create(FT, Function::ExternalLinkage, Name, TheModule.get());
 
   unsigned Idx = 0;
   for (auto &Arg : F->args()) {
-    Arg.setName(ArgNames[Idx++]);
+    Arg.setName(Args[Idx++]);
   }
 
   return F;
@@ -488,7 +490,7 @@ Function *FunctionAST::codegen() {
   BasicBlock *BB = BasicBlock::Create(*TheContext, "entry", TheFunction);
   Builder->SetInsertPoint(BB);
 
-  NameValues.clear();
+  NamedValues.clear();
   for (auto &Arg : TheFunction->args()) {
     NamedValues[std::string(Arg.getName())] = &Arg;
   }
@@ -505,12 +507,23 @@ Function *FunctionAST::codegen() {
 }
 
 //===----------------------------------------------------------------------===//
-// Top-Level parsing
+//  Top-Level parsing and JIT Driver
 //===----------------------------------------------------------------------===//
 
+static void InitalizeModule() {
+  TheContext = std::make_unique<LLVMContext>();
+  TheModule = std::make_unique<Module>("my cool jit", *TheContext);
+
+  Builder = std::make_unique<IRBuilder<>>(*TheContext);
+}
+
 static void HandleDefinition() {
-  if (ParseDefinition()) {
-    fprintf(stderr, "Parsed a function definition.\n");
+  if (auto FnAST = ParseDefinition()) {
+    if (auto *FnIR = FnAST->codegen()) {
+      fprintf(stderr, "Read function definition:");
+      FnIR->print(errs());
+      fprintf(stderr, "\n");
+    }
   } else {
     // Skip token for error recovery.
     getNextToken();
@@ -518,8 +531,12 @@ static void HandleDefinition() {
 }
 
 static void HandleExtern() {
-  if (ParseExtern()) {
-    fprintf(stderr, "Parsed an extern\n");
+  if (auto ProtoAST = ParseExtern()) {
+    if (auto *FnIR = ProtoAST->codegen()) {
+      fprintf(stderr, "Read extern:");
+      FnIR->print(errs());
+      fprintf(stderr, "\n");
+    }
   } else {
     // Skip token for error recovery.
     getNextToken();
@@ -528,8 +545,14 @@ static void HandleExtern() {
 
 static void HandleTopLevelExpression() {
   // Evaluate a top-level expression into an anonymous function.
-  if (ParseTopLevelExpr()) {
-    fprintf(stderr, "Parsed a top-level expr\n");
+  if (auto FnAST = ParseTopLevelExpr()) {
+    if (auto *FnIR = FnAST->codegen()) {
+      fprintf(stderr, "Read top-level expression:");
+      FnIR->print(errs());
+      fprintf(stderr, "\n");
+
+      FnIR->eraseFromParent();
+    }
   } else {
     // Skip token for error recovery.
     getNextToken();
@@ -575,8 +598,12 @@ int main() {
   fprintf(stderr, "ready> ");
   getNextToken();
 
+  InitalizeModule();
+
   // Run the main "interpreter loop" now.
   MainLoop();
+
+  TheModule->print(errs(), nullptr);
 
   return 0;
 }
