@@ -1,4 +1,4 @@
-#include "../include/KaleidoscopeJIT.h"
+#include "/home/brook/桌面/llvm-project/llvm/examples/Kaleidoscope/include/KaleidoscopeJIT.h"
 
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/STLExtras.h"
@@ -338,7 +338,7 @@ static std::unique_ptr<ExprAST> ParseIfExpr() {
   if (!Cond)
     return nullptr;
 
-  if (CurTok!= 'tok_then')
+  if (CurTok!= tok_then)
     return LogError("expected 'then'");
   getNextToken(); // eat the then.
 
@@ -346,7 +346,7 @@ static std::unique_ptr<ExprAST> ParseIfExpr() {
   if (!Then)
     return nullptr;
     
-  if (CurTok!= 'tok_else')
+  if (CurTok!= tok_else)
     return LogError("expected 'else'");
   getNextToken(); // eat the else.
 
@@ -363,13 +363,13 @@ static std::unique_ptr<ExprAST> ParseForExpr() {
   getNextToken(); // eat the for.
 
   if (CurTok != tok_identifier)
-    return LogErrorP("expected identifier after 'for'");
+    return LogError("expected identifier after 'for'");
 
   std::string IdName = IdentifierStr;
   getNextToken(); // eat identifier.
 
   if (CurTok != '=')
-    return LogErrorP("expected '='");
+    return LogError("expected '='");
   
   getNextToken(); // eat '='
 
@@ -393,8 +393,8 @@ static std::unique_ptr<ExprAST> ParseForExpr() {
       return nullptr;
   }
 
-  if (CurTok!= 'in')
-    return LogErrorP("expected 'in'");
+  if (CurTok != tok_in)
+    return LogError("expected 'in'");
   getNextToken(); // eat the 'in'.
 
   auto Body = ParseExpression();
@@ -597,8 +597,8 @@ Value *BinaryExprAST::codegen() {
 
 Value *CallExprAST::codegen() {
   // Look up the name in the global module table.
-  Function *Callee = getFunction(CalleeName);
-  if (!Callee)
+  Function *CalleeF = getFunction(Callee);
+  if (!CalleeF)
     return LogErrorV("Unknown function referenced");
 
   // If argument mismatch error.
@@ -727,7 +727,7 @@ Value *ForExprAST::codegen() {
 
   Builder->SetInsertPoint(AfterBB);
 
-  Variable->addINcoming(NextVar, LoopEndBB);
+  Variable->addIncoming(NextVar, LoopEndBB);
 
   if (OldVal)
     NamedValues[VarName] = OldVal;
@@ -793,3 +793,156 @@ Function *FunctionAST::codegen() {
 //===----------------------------------------------------------------------===//
 // Top-Level parsing and JIT Driver
 //===----------------------------------------------------------------------===//
+
+static void InitializeModuleAndPassManager() {
+  // Open a new module.
+  TheContext = std::make_unique<LLVMContext>();
+  TheModule = std::make_unique<Module>("my cool jit", *TheContext);
+  TheModule->setDataLayout(TheJIT->getDataLayout());
+
+  // Create a new builder for the module.
+  Builder = std::make_unique<IRBuilder<>>(*TheContext);
+
+  // Create a new pass manager attached to it.
+  TheFPM = std::make_unique<legacy::FunctionPassManager>(TheModule.get());
+
+  // Do simple "peephole" optimizations and bit-twiddling optzns.
+  TheFPM->add(createInstructionCombiningPass());
+  // Reassociate expressions.
+  TheFPM->add(createReassociatePass());
+  // Eliminate Common SubExpressions.
+  TheFPM->add(createGVNPass());
+  // Simplify the control flow graph (deleting unreachable blocks, etc).
+  TheFPM->add(createCFGSimplificationPass());
+  
+  TheFPM->doInitialization();
+}
+
+static void HandleDefinition() {
+  if (auto FnAST = ParseDefinition()) {
+    if (auto *FnIR = FnAST->codegen()) {
+      fprintf(stderr, "Read function definition:");
+      FnIR->print(errs());
+      fprintf(stderr, "\n");
+      ExitOnErr(TheJIT->addModule(ThreadSafeModule(std::move(TheModule), std::move(TheContext))));
+      InitializeModuleAndPassManager();
+    }
+  } else {
+    // Skip token for error recovery.
+    getNextToken();
+  }
+}
+
+static void HandleExtern() {
+  if (auto ProtoAST = ParseExtern()) {
+    if (auto *FnIR = ProtoAST->codegen()) {
+      fprintf(stderr, "Read extern: ");
+      FnIR->print(errs());
+      fprintf(stderr, "\n");
+      FunctionProtos[ProtoAST->getName()] = std::move(ProtoAST);
+    }
+  } else {
+    // Skip token for error recovery.
+    getNextToken();
+  }
+}
+
+static void HandleTopLevelExpression() {
+  // Evaluate a top-level expression into an anonymous function.
+  if (auto FnAST = ParseTopLevelExpr()) {
+    if (FnAST->codegen()) {
+      auto RT = TheJIT->getMainJITDylib().createResourceTracker();
+
+      auto TSM = ThreadSafeModule(std::move(TheModule), std::move(TheContext));
+      ExitOnErr(TheJIT->addModule(std::move(TSM), RT));
+      InitializeModuleAndPassManager();
+
+      auto ExprSymbol = ExitOnErr(TheJIT->lookup("__anon_expr"));
+
+      // double (*FP)() = ExprSymbol.getAddress().toPtr<double (*)()>();
+      double (*FP)() = (double (*)())(intptr_t)ExprSymbol.getAddress();
+      fprintf(stderr, "Evaluated to %f\n", FP());
+
+      ExitOnErr(RT->remove());
+    }
+  } else {
+    // Skip token for error recovery.
+    getNextToken();
+  }
+}
+
+/// top ::= definition | external | expression | ';'
+static void MainLoop() {
+  while (true) {
+    fprintf(stderr, "ready> ");
+    switch (CurTok) {
+    case tok_eof:
+      return;
+    case ';': // ignore top-level semicolons.
+      getNextToken();
+      break;
+    case tok_def:
+      HandleDefinition();
+      break;
+    case tok_extern:
+      HandleExtern();
+      break;
+    default:
+      HandleTopLevelExpression();
+      break;
+    }
+  }
+}
+
+//===----------------------------------------------------------------------===//
+// "Library" functions that can be "extern'd" from user code.
+//===----------------------------------------------------------------------===//
+
+#ifdef _WIN32
+#define DLLEXPORT __declspec(dllexport)
+#else
+#define DLLEXPORT
+#endif
+
+/// putchard - putchar that takes a double and returns 0.
+extern "C" DLLEXPORT double putchard(double X) {
+  fputc((char)X, stderr);
+  return 0;
+}
+
+/// printd - printf that takes a double prints it as "%f\n", returning 0.
+extern "C" DLLEXPORT double printd(double X) {
+  fprintf(stderr, "%f\n", X);
+  return 0;
+}
+
+//===----------------------------------------------------------------------===//
+// Main driver code.
+//===----------------------------------------------------------------------===//
+
+int main() {
+  // Initialize the LLVM backend.
+  InitializeNativeTarget();
+  InitializeNativeTargetAsmPrinter();
+  InitializeNativeTargetAsmParser();
+
+  // Install standard binary operators.
+  // 1 is lowest precedence.
+  BinopPrecedence['<'] = 10;
+  BinopPrecedence['+'] = 20;
+  BinopPrecedence['-'] = 20;
+  BinopPrecedence['*'] = 40; // highest.
+
+  // Prime the first token.
+  fprintf(stderr, "ready> ");
+  getNextToken();
+
+  TheJIT = ExitOnErr(KaleidoscopeJIT::Create());
+
+  InitializeModuleAndPassManager();
+
+  // Run the main "interpreter loop" now.
+  MainLoop();
+
+  return 0;
+}
