@@ -370,13 +370,13 @@ static std::unique_ptr<ExprAST> ParseForExpr() {
 
   if (CurTok != '=')
     return LogError("expected '='");
-  
   getNextToken(); // eat '='
 
   auto Start = ParseExpression();
   if (!Start)
     return nullptr;
-
+  if(CurTok != ',')
+    return LogError("expected ',' after for start value");
   getNextToken(); // eat ','
   
   auto End = ParseExpression();
@@ -385,9 +385,8 @@ static std::unique_ptr<ExprAST> ParseForExpr() {
 
   // 未必有步长
   std::unique_ptr<ExprAST> Step;
-  if (CurTok!= ',') {
+  if (CurTok == ',') {
     getNextToken(); // eat the ','.
-
     Step = ParseExpression();
     if (!Step)
       return nullptr;
